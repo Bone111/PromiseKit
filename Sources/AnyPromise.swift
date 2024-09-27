@@ -1,215 +1,224 @@
-import Foundation.NSError
+import Foundation
 
-@objc(AnyPromise) public class AnyPromise: NSObject {
+/**
+ __AnyPromise is an implementation detail.
 
-    private var state: State
+ Because of how ObjC/Swift compatibility work we have to compose our AnyPromise
+ with this internal object, however this is still part of the public interface.
+ Sadly. Please don’t use it.
+*/
+@objc(__AnyPromise) public class __AnyPromise: NSObject {
+    fileprivate let box: Box<Any?>
 
-    /**
-     - Returns: A new AnyPromise bound to a Promise<T?>.
-     The two promises represent the same task, any changes to either will instantly reflect on both.
-    */
-    public init<T: AnyObject>(bound: Promise<T?>) {
-        var resolve: ((AnyObject?) -> Void)!
-        state = State(resolver: &resolve)
-        bound.pipe { resolution in
-            switch resolution {
-            case .Fulfilled(let value):
-                resolve(value)
-            case .Rejected(let error, let token):
-                let nserror = error as NSError
-                unconsume(error: nserror, reusingToken: token)
-                resolve(nserror)
-            }
-        }
-    }
-
-    /**
-     - Returns: A new AnyPromise bound to a Promise<T>.
-     The two promises represent the same task, any changes to either will instantly reflect on both.
-    */
-    convenience public init<T: AnyObject>(bound: Promise<T>) {
-        // FIXME efficiency. Allocating the extra promise for conversion sucks.
-        self.init(bound: bound.then(on: zalgo){ Optional.Some($0) })
-    }
-
-    /**
-     - Returns: A new `AnyPromise` bound to a `Promise<[T]>`.
-     The two promises represent the same task, any changes to either will instantly reflect on both.
-     The value is converted to an NSArray so Objective-C can use it.
-    */
-    convenience public init<T: AnyObject>(bound: Promise<[T]>) {
-        self.init(bound: bound.then(on: zalgo) { NSArray(array: $0) })
-    }
-
-    /**
-     - Returns: A new AnyPromise bound to a `Promise<[T:U]>`.
-     The two promises represent the same task, any changes to either will instantly reflect on both.
-     The value is converted to an NSDictionary so Objective-C can use it.
-    */
-    convenience public init<T: AnyObject, U: AnyObject>(bound: Promise<[T:U]>) {
-        self.init(bound: bound.then(on: zalgo) { NSDictionary(dictionary: $0) })
-    }
-
-    /**
-     - Returns: A new AnyPromise bound to a `Promise<Int>`.
-     The two promises represent the same task, any changes to either will instantly reflect on both.
-     The value is converted to an NSNumber so Objective-C can use it.
-    */
-    convenience public init(bound: Promise<Int>) {
-        self.init(bound: bound.then(on: zalgo) { NSNumber(integer: $0) })
-    }
-
-    /**
-     - Returns: A new AnyPromise bound to a `Promise<Void>`.
-     The two promises represent the same task, any changes to either will instantly reflect on both.
-    */
-    convenience public init(bound: Promise<Void>) {
-        self.init(bound: bound.then(on: zalgo) { Optional<AnyObject>.None })
-    }
-
-    @objc init(@noescape bridge: ((AnyObject?) -> Void) -> Void) {
-        var resolve: ((AnyObject?) -> Void)!
-        state = State(resolver: &resolve)
-        bridge { result in
-            if let next = result as? AnyPromise {
-                next.pipe(resolve)
+    @objc public init(resolver body: (@escaping (Any?) -> Void) -> Void) {
+        box = EmptyBox<Any?>()
+        super.init()
+        body {
+            if let p = $0 as? AnyPromise {
+                p.d.__pipe(self.box.seal)
             } else {
-                resolve(result)
+                self.box.seal($0)
             }
         }
     }
 
-    @objc func pipe(body: (AnyObject?) -> Void) {
-        state.get { seal in
-            switch seal {
-            case .Pending(let handlers):
-                handlers.append(body)
-            case .Resolved(let value):
-                body(value)
-            }
-        }
-    }
-
-    @objc var __value: AnyObject? {
-        return state.get() ?? nil
-    }
-
-    /**
-     A promise starts pending and eventually resolves.
-     - Returns: `true` if the promise has not yet resolved.
-    */
-    @objc public var pending: Bool {
-        return state.get() == nil
-    }
-
-    /**
-     A promise starts pending and eventually resolves.
-     - Returns: `true` if the promise has resolved.
-    */
-    @objc public var resolved: Bool {
-        return !pending
-    }
-
-    /**
-     A fulfilled promise has resolved successfully.
-     - Returns: `true` if the promise was fulfilled.
-    */
-    @objc public var fulfilled: Bool {
-        switch state.get() {
-        case .Some(let obj) where obj is NSError:
-            return false
-        case .Some:
-            return true
-        case .None:
-            return false
-        }
-    }
-
-    /**
-     A rejected promise has resolved without success.
-     - Returns: `true` if the promise was rejected.
-    */
-    @objc public var rejected: Bool {
-        switch state.get() {
-        case .Some(let obj) where obj is NSError:
-            return true
-        default:
-            return false
-        }
-    }
-
-    /**
-     Continue a Promise<T> chain from an AnyPromise.
-    */
-    public func then<T>(on q: dispatch_queue_t = dispatch_get_main_queue(), body: (AnyObject?) throws -> T) -> Promise<T> {
-        return Promise(sealant: { resolve in
-            pipe { object in
-                if let error = object as? NSError {
-                    resolve(.Rejected(error, error.token))
-                } else {
-                    contain_zalgo(q, rejecter: resolve) {
-                        resolve(.Fulfilled(try body(self.valueForKey("value"))))
+    @objc public func __thenOn(_ q: DispatchQueue, execute: @escaping (Any?) -> Any?) -> AnyPromise {
+        return AnyPromise(__D: __AnyPromise(resolver: { resolve in
+            self.__pipe { obj in
+                if !(obj is NSError) {
+                    q.async {
+                        resolve(execute(obj))
                     }
+                } else {
+                    resolve(obj)
                 }
             }
-        })
+        }))
     }
 
-    /**
-     Continue a Promise<T> chain from an AnyPromise.
-    */
-    public func then(on q: dispatch_queue_t = dispatch_get_main_queue(), body: (AnyObject?) -> AnyPromise) -> Promise<AnyObject?> {
-        return Promise { fulfill, reject in
-            pipe { object in
-                if let error = object as? NSError {
-                    reject(error)
+    @objc public func __catchOn(_ q: DispatchQueue, execute: @escaping (Any?) -> Any?) -> AnyPromise {
+        return AnyPromise(__D: __AnyPromise(resolver: { resolve in
+            self.__pipe { obj in
+                if obj is NSError {
+                    q.async {
+                        resolve(execute(obj))
+                    }
                 } else {
-                    contain_zalgo(q) {
-                        body(object).pipe { object in
-                            if let error = object as? NSError {
-                                reject(error)
-                            } else {
-                                fulfill(object)
-                            }
+                    resolve(obj)
+                }
+            }
+        }))
+    }
+
+    @objc public func __ensureOn(_ q: DispatchQueue, execute: @escaping () -> Void) -> AnyPromise {
+        return AnyPromise(__D: __AnyPromise(resolver: { resolve in
+            self.__pipe { obj in
+                q.async {
+                    execute()
+                    resolve(obj)
+                }
+            }
+        }))
+    }
+
+    @objc public func __wait() -> Any? {
+        if Thread.isMainThread {
+            conf.logHandler(.waitOnMainThread)
+        }
+        
+        var result = __value
+        
+        if result == nil {
+            let group = DispatchGroup()
+            group.enter()
+            self.__pipe { obj in
+                result = obj
+                group.leave()
+            }
+            group.wait()
+        }
+        
+        return result
+    }
+ 
+    /// Internal, do not use! Some behaviors undefined.
+    @objc public func __pipe(_ to: @escaping (Any?) -> Void) {
+        let to = { (obj: Any?) -> Void in
+            if obj is NSError {
+                to(obj)  // or we cannot determine if objects are errors in objc land
+            } else {
+                to(obj)
+            }
+        }
+        switch box.inspect() {
+        case .pending:
+            box.inspect {
+                switch $0 {
+                case .pending(let handlers):
+                    handlers.append { obj in
+                        to(obj)
+                    }
+                case .resolved(let obj):
+                    to(obj)
+                }
+            }
+        case .resolved(let obj):
+            to(obj)
+        }
+    }
+
+    @objc public var __value: Any? {
+        switch box.inspect() {
+        case .resolved(let obj):
+            return obj
+        default:
+            return nil
+        }
+    }
+
+    @objc public var __pending: Bool {
+        switch box.inspect() {
+        case .pending:
+            return true
+        case .resolved:
+            return false
+        }
+    }
+}
+
+extension AnyPromise: Thenable, CatchMixin {
+
+    /// - Returns: A new `AnyPromise` bound to a `Promise<Any>`.
+    public convenience init<U: Thenable>(_ bridge: U) {
+        self.init(__D: __AnyPromise(resolver: { resolve in
+            bridge.pipe {
+                switch $0 {
+                case .rejected(let error):
+                    resolve(error as NSError)
+                case .fulfilled(let value):
+                    resolve(value)
+                }
+            }
+        }))
+    }
+
+    public func pipe(to body: @escaping (Result<Any?>) -> Void) {
+
+        func fulfill() {
+            // calling through to the ObjC `value` property unwraps (any) PMKManifold
+            // and considering this is the Swift pipe; we want that.
+            body(.fulfilled(self.value(forKey: "value")))
+        }
+
+        switch box.inspect() {
+        case .pending:
+            box.inspect {
+                switch $0 {
+                case .pending(let handlers):
+                    handlers.append {
+                        if let error = $0 as? Error {
+                            body(.rejected(error))
+                        } else {
+                            fulfill()
                         }
                     }
+                case .resolved(let error as Error):
+                    body(.rejected(error))
+                case .resolved:
+                    fulfill()
                 }
             }
+        case .resolved(let error as Error):
+            body(.rejected(error))
+        case .resolved:
+            fulfill()
         }
     }
 
-    /**
-     Continue a Promise<T> chain from an AnyPromise.
-    */
-    public func then<T>(on q: dispatch_queue_t = dispatch_get_main_queue(), body: (AnyObject?) -> Promise<T>) -> Promise<T> {
-        return Promise(sealant: { resolve in
-            pipe { object in
-                if let error = object as? NSError {
-                    resolve(.Rejected(error, error.token))
-                } else {
-                    contain_zalgo(q) {
-                        body(object).pipe(resolve)
-                    }
+    fileprivate var d: __AnyPromise {
+        return value(forKey: "__d") as! __AnyPromise
+    }
+
+    var box: Box<Any?> {
+        return d.box
+    }
+
+    public var result: Result<Any?>? {
+        guard let value = __value else {
+            return nil
+        }
+        if let error = value as? Error {
+            return .rejected(error)
+        } else {
+            return .fulfilled(value)
+        }
+    }
+
+    public typealias T = Any?
+}
+
+
+#if swift(>=3.1)
+public extension Promise where T == Any? {
+    convenience init(_ anyPromise: AnyPromise) {
+        self.init {
+            anyPromise.pipe(to: $0.resolve)
+        }
+    }
+}
+#else
+extension AnyPromise {
+    public func asPromise() -> Promise<Any?> {
+        return Promise(.pending, resolver: { resolve in
+            pipe { result in
+                switch result {
+                case .rejected(let error):
+                    resolve.reject(error)
+                case .fulfilled(let obj):
+                    resolve.fulfill(obj)
                 }
             }
         })
     }
-
-    private class State: UnsealedState<AnyObject?> {
-        required init(inout resolver: ((AnyObject?) -> Void)!) {
-            var preresolve: ((AnyObject?) -> Void)!
-            super.init(resolver: &preresolve)
-            resolver = { obj in
-                if let error = obj as? NSError { unconsume(error: error) }
-                preresolve(obj)
-            }
-        }
-    }
 }
-
-
-extension AnyPromise {
-    override public var description: String {
-        return "AnyPromise: \(state)"
-    }
-}
+#endif

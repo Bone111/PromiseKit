@@ -1,10 +1,9 @@
-#import <dispatch/once.h>
-#import <Foundation/NSDictionary.h>
-#import <Foundation/NSError.h>
-#import <Foundation/NSException.h>
 #import "NSMethodSignatureForBlock.m"
-#import <PromiseKit/Umbrella.h>
-#import <PromiseKit/PromiseKit.h>
+#import <Foundation/NSDictionary.h>
+#import <Foundation/NSException.h>
+#import "AnyPromise+Private.h"
+#import <Foundation/NSError.h>
+#import <dispatch/once.h>
 #import <string.h>
 
 #ifndef PMKLog
@@ -110,36 +109,12 @@ static id PMKCallVariadicBlock(id frock, id result) {
     @try {
         return _PMKCallVariadicBlock(frock, result);
     } @catch (id thrown) {
-        return PMKProcessUnhandledException(thrown);
-    }
-}
+        if ([thrown isKindOfClass:[NSString class]])
+            return thrown;
+        if ([thrown isKindOfClass:[NSError class]])
+            return thrown;
 
-
-static dispatch_once_t onceToken;
-static NSError *(^PMKUnhandledExceptionHandler)(id);
-
-NSError *PMKProcessUnhandledException(id thrown) {
-
-    dispatch_once(&onceToken, ^{
-        PMKUnhandledExceptionHandler = ^id(id reason){
-            if ([reason isKindOfClass:[NSError class]])
-                return reason;
-            if ([reason isKindOfClass:[NSString class]])
-                return [NSError errorWithDomain:PMKErrorDomain code:PMKUnexpectedError userInfo:@{NSLocalizedDescriptionKey: reason}];
-            return nil;
-        };
-    });
-
-    id err = PMKUnhandledExceptionHandler(thrown);
-    if (!err) {
-        NSLog(@"PromiseKit no longer catches *all* exceptions. However you can change this behavior by setting a new PMKProcessUnhandledException handler.");
+        // we don’t catch objc exceptions: they are meant to crash your app
         @throw thrown;
     }
-    return err;
-}
-
-void PMKSetUnhandledExceptionHandler(NSError *(^newHandler)(id)) {
-    dispatch_once(&onceToken, ^{
-        PMKUnhandledExceptionHandler = newHandler;
-    });
 }

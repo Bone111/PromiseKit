@@ -1,20 +1,30 @@
-language: objective-c
-xcode_project: PromiseKit.xcodeproj
-before_install:
-  - brew update
-  - brew install carthage
-install: carthage bootstrap --verbose
-xcode_scheme: [PMKiOS, PMKOSX]
-xcode_sdk: [iphonesimulator8.3, macosx10.10]
-osx_image: beta-xcode6.3
+os: osx
+language: swift
+osx_image: xcode9.4
 
-matrix:
-  exclude:
-    - xcode_scheme: PMKOSX
-      xcode_sdk: iphonesimulator8.3
-    - xcode_scheme: PMKiOS
-      xcode_sdk: macosx10.10
+if: tag =~ /^[0-9]+\.[0-9]+\.[0-9]+/
 
-branches:
-  only:
-    - master
+stages:
+  - swiftpm
+  - carthage
+
+jobs:
+  include:
+    - &swiftpm
+      stage: swiftpm
+      osx_image: xcode9.4
+      script: swift build
+    - <<: *swiftpm
+      osx_image: xcode10.3
+    - <<: *swiftpm
+      osx_image: xcode11.6
+
+    - &carthage
+      stage: carthage
+      osx_image: xcode9.4
+      install: sed -i '' "s/SWIFT_TREAT_WARNINGS_AS_ERRORS = NO;/SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;/" *.xcodeproj/project.pbxproj
+      script: carthage build --no-skip-current
+    - <<: *carthage
+      osx_image: xcode10.3
+    - <<: *carthage
+      osx_image: xcode11.6

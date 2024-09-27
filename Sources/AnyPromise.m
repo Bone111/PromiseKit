@@ -1,116 +1,147 @@
-#import "AnyPromise.h"
-#import "AnyPromise+Private.h"
-@import Foundation.NSKeyValueCoding;
+#if __has_include("PromiseKit-Swift.h")
+    #import "PromiseKit-Swift.h"
+#else
+    #import <PromiseKit/PromiseKit-Swift.h>
+#endif
 #import "PMKCallVariadicBlock.m"
+#import "AnyPromise+Private.h"
+#import "AnyPromise.h"
 
 NSString *const PMKErrorDomain = @"PMKErrorDomain";
 
 
-@implementation AnyPromise (objc)
-
-- (instancetype)initWithResolver:(PMKResolver __strong *)resolver {
-    return [self initWithBridge:^(PMKResolver resolve){
-        *resolver = resolve;
-    }];
+@implementation AnyPromise {
+    __AnyPromise *d;
 }
 
-+ (instancetype)promiseWithResolverBlock:(void (^)(PMKResolver))resolveBlock {
-    return [[self alloc] initWithBridge:resolveBlock];
+- (instancetype)initWith__D:(__AnyPromise *)dd {
+    self = [super init];
+    if (self) self->d = dd;
+    return self;
+}
+
+- (instancetype)initWithResolver:(PMKResolver __strong *)resolver {
+    self = [super init];
+    if (self)
+        d = [[__AnyPromise alloc] initWithResolver:^(void (^resolve)(id)) {
+            *resolver = resolve;
+        }];
+    return self;
+}
+
++ (instancetype)promiseWithResolverBlock:(void (^)(PMKResolver _Nonnull))resolveBlock {
+    id d = [[__AnyPromise alloc] initWithResolver:resolveBlock];
+    return [[self alloc] initWith__D:d];
 }
 
 + (instancetype)promiseWithValue:(id)value {
-    return [[self alloc] initWithBridge:^(PMKResolver resolve){
+    //TODO provide a more efficient route for sealed promises
+    id d = [[__AnyPromise alloc] initWithResolver:^(void (^resolve)(id)) {
         resolve(value);
     }];
+    return [[self alloc] initWith__D:d];
 }
 
-static inline AnyPromise *AnyPromiseWhen(AnyPromise *when, void(^then)(id, PMKResolver)) {
-    return [[AnyPromise alloc] initWithBridge:^(PMKResolver resolve){
-        [when pipe:^(id obj){
-            then(obj, resolve);
-        }];
-    }];
+//TODO remove if possible, but used by when.m
+- (void)__pipe:(void (^)(id _Nullable))block {
+    [d __pipe:block];
 }
 
-static inline AnyPromise *__then(AnyPromise *self, dispatch_queue_t queue, id block) {
-    return AnyPromiseWhen(self, ^(id obj, PMKResolver resolve) {
-        if (IsError(obj)) {
-            resolve(obj);
-        } else dispatch_async(queue, ^{
-            resolve(PMKCallVariadicBlock(block, obj));
-        });
-    });
+//NOTE used by AnyPromise.swift
+- (id)__d {
+    return d;
 }
 
 - (AnyPromise *(^)(id))then {
     return ^(id block) {
-        return __then(self, dispatch_get_main_queue(), block);
+        return [self->d __thenOn:dispatch_get_main_queue() execute:^(id obj) {
+            return PMKCallVariadicBlock(block, obj);
+        }];
     };
 }
 
 - (AnyPromise *(^)(dispatch_queue_t, id))thenOn {
     return ^(dispatch_queue_t queue, id block) {
-        return __then(self, queue, block);
+        return [self->d __thenOn:queue execute:^(id obj) {
+            return PMKCallVariadicBlock(block, obj);
+        }];
     };
 }
 
 - (AnyPromise *(^)(id))thenInBackground {
     return ^(id block) {
-        return __then(self, dispatch_get_global_queue(0, 0), block);
+        return [self->d __thenOn:dispatch_get_global_queue(0, 0) execute:^(id obj) {
+            return PMKCallVariadicBlock(block, obj);
+        }];
     };
 }
 
-static inline AnyPromise *__catch(AnyPromise *self, BOOL includeCancellation, id block) {
-    return AnyPromiseWhen(self, ^(id obj, PMKResolver resolve) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (IsError(obj) && (includeCancellation || ![obj cancelled])) {
-                [obj pmk_consume];
-                resolve(PMKCallVariadicBlock(block, obj));
-            } else {
-                resolve(obj);
-            }
-        });
-    });
+- (AnyPromise *(^)(dispatch_queue_t, id))catchOn {
+    return ^(dispatch_queue_t q, id block) {
+        return [self->d __catchOn:q execute:^(id obj) {
+            return PMKCallVariadicBlock(block, obj);
+        }];
+    };
 }
 
 - (AnyPromise *(^)(id))catch {
     return ^(id block) {
-        return __catch(self, NO, block);
+        return [self->d __catchOn:dispatch_get_main_queue() execute:^(id obj) {
+            return PMKCallVariadicBlock(block, obj);
+        }];
     };
 }
 
-- (AnyPromise *(^)(PMKCatchPolicy, id))catchWithPolicy {
-    return ^(PMKCatchPolicy policy, id block) {
-        return __catch(self, policy == PMKCatchPolicyAllErrors, block);
+- (AnyPromise *(^)(id))catchInBackground {
+    return ^(id block) {
+        return [self->d __catchOn:dispatch_get_global_queue(0, 0) execute:^(id obj) {
+            return PMKCallVariadicBlock(block, obj);
+        }];
     };
 }
 
-static inline AnyPromise *__finally(AnyPromise *self, dispatch_queue_t queue, dispatch_block_t block) {
-    return AnyPromiseWhen(self, ^(id obj, PMKResolver resolve) {
-        dispatch_async(queue, ^{
-            block();
-            resolve(obj);
-        });
-    });
-}
-
-- (AnyPromise *(^)(dispatch_block_t))finally {
+- (AnyPromise *(^)(dispatch_block_t))ensure {
     return ^(dispatch_block_t block) {
-        return __finally(self, dispatch_get_main_queue(), block);
+        return [self->d __ensureOn:dispatch_get_main_queue() execute:block];
     };
 }
 
-- (AnyPromise *(^)(dispatch_queue_t, dispatch_block_t))finallyOn {
+- (AnyPromise *(^)(dispatch_queue_t, dispatch_block_t))ensureOn {
     return ^(dispatch_queue_t queue, dispatch_block_t block) {
-        return __finally(self, queue, block);
+        return [self->d __ensureOn:queue execute:block];
     };
+}
+
+- (AnyPromise *(^)(dispatch_block_t))ensureInBackground {
+    return ^(dispatch_block_t block) {
+        return [self->d __ensureOn:dispatch_get_global_queue(QOS_CLASS_UNSPECIFIED, 0) execute:block];
+    };
+}
+
+- (id)wait {
+    return [d __wait];
+}
+
+- (BOOL)pending {
+    return [[d valueForKey:@"__pending"] boolValue];
+}
+
+- (BOOL)rejected {
+    return IsError([d __value]);
+}
+
+- (BOOL)fulfilled {
+    return !self.rejected;
 }
 
 - (id)value {
-    id result = [self valueForKey:@"__value"];
-    return [result isKindOfClass:[PMKArray class]]
-        ? result[0]
-        : result;
+    id obj = [d __value];
+
+    if ([obj isKindOfClass:[PMKArray class]]) {
+        return obj[0];
+    } else {
+        return obj;
+    }
 }
 
 @end
